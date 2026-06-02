@@ -1,8 +1,17 @@
 // Gemma Schedule — Service Worker
-// Handles push notifications for iOS PWA
+const VERSION = '1.1';
 
-self.addEventListener('install', e => self.skipWaiting());
-self.addEventListener('activate', e => e.waitUntil(self.clients.claim()));
+self.addEventListener('install', e => {
+  self.skipWaiting(); // activate new SW immediately
+});
+
+self.addEventListener('activate', e => {
+  e.waitUntil(
+    caches.keys().then(keys =>
+      Promise.all(keys.map(key => caches.delete(key))) // clear old caches
+    ).then(() => self.clients.claim())
+  );
+});
 
 // Listen for notification messages from the main page
 self.addEventListener('message', e => {
