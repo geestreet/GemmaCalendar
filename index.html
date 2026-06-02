@@ -800,30 +800,65 @@ function showToast(msg) {
 // ─── NOTIFICATIONS ─────────────────────────────────────────────────────────
 let notifEnabled = false;
 let notifIntervalId = null;
+let swRegistration = null;
+
+// Register service worker (required for iOS PWA notifications)
+if ('serviceWorker' in navigator) {
+  navigator.serviceWorker.register('./sw.js').then(reg => {
+    swRegistration = reg;
+  }).catch(err => console.warn('SW registration failed:', err));
+}
 
 async function toggleNotifications() {
   if (notifEnabled) {
     notifEnabled = false;
     clearInterval(notifIntervalId);
+    localStorage.setItem('gemma_notif', '0');
     updateNotifBtn();
     showToast('Notifications off');
     return;
   }
 
-  if (!('Notification' in window)) {
-    showToast('⚠️ Add to Home Screen first for notifications');
+  // iOS PWA requires the app to be installed to home screen
+  if (!isStandalone() && /iphone|ipad|ipod/i.test(navigator.userAgent)) {
+    showToast('📲 Add to Home Screen first, then enable alerts');
     showInstallOverlay();
     return;
   }
 
-  const perm = await Notification.requestPermission();
+  if (!('Notification' in window) && !swRegistration) {
+    showToast('⚠️ Notifications not supported on this browser');
+    return;
+  }
+
+  let perm = 'denied';
+  try {
+    perm = await Notification.requestPermission();
+  } catch(e) {
+    // Some iOS versions throw — try the callback form
+    perm = await new Promise(resolve => Notification.requestPermission(resolve));
+  }
+
   if (perm === 'granted') {
     notifEnabled = true;
+    localStorage.setItem('gemma_notif', '1');
     updateNotifBtn();
     showToast('🔔 Alerts enabled!');
+    // Send a test notification so user sees it works
+    sendNotification("🔔 Gemma's Alerts Active", "You'll get a banner at the start of each activity.", 'test');
     startNotifWatcher();
   } else {
-    showToast('⚠️ Permission denied — check Settings');
+    showToast('⚠️ Permission denied — check Settings → Notifications');
+  }
+}
+
+// Send notification via Service Worker (works on iOS PWA)
+// Falls back to regular Notification API on desktop
+function sendNotification(title, body, tag) {
+  if (swRegistration && swRegistration.active) {
+    swRegistration.active.postMessage({ type: 'SHOW_NOTIFICATION', title, body, tag });
+  } else if ('Notification' in window && Notification.permission === 'granted') {
+    new Notification(title, { body, tag });
   }
 }
 
@@ -845,6 +880,7 @@ function updateNotifBtn() {
 const notifiedBlocks = new Set();
 
 function startNotifWatcher() {
+  clearInterval(notifIntervalId);
   notifIntervalId = setInterval(checkAndNotify, 30000); // check every 30s
   checkAndNotify();
 }
@@ -863,14 +899,11 @@ function checkAndNotify() {
     // Notify within 1 minute of start time
     if (Math.abs(now - s) <= 1 && !notifiedBlocks.has(key)) {
       notifiedBlocks.add(key);
-      const cleanTask = task.replace(/[^\w\s\/\-]/g, '').trim();
-      new Notification("⏰ Time for Gemma's next activity!", {
-        body: `${cleanTask} starts now (${fmt12(start)})`,
-        icon: 'data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><text y=".9em" font-size="90">📅</text></svg>',
-        badge: 'data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><text y=".9em" font-size="90">📅</text></svg>',
-        tag: key,
-        renotify: true
-      });
+      sendNotification(
+        "⏰ Time for Gemma's next activity!",
+        `${task} — ${fmt12(start)}`,
+        key
+      );
     }
   });
 }
@@ -904,11 +937,21 @@ function init() {
     renderSchedule();
   }, 60000);
 
-  // Check notifications permission state
-  if ('Notification' in window && Notification.permission === 'granted') {
-    notifEnabled = true;
-    updateNotifBtn();
-    startNotifWatcher();
+  // Restore notification state if permission was previously granted
+  if ('Notification' in window && Notification.permission === 'granted' && localStorage.getItem('gemma_notif') === '1') {
+    // Wait for SW to be ready before starting watcher
+    if ('serviceWorker' in navigator) {
+      navigator.serviceWorker.ready.then(reg => {
+        swRegistration = reg;
+        notifEnabled = true;
+        updateNotifBtn();
+        startNotifWatcher();
+      });
+    } else {
+      notifEnabled = true;
+      updateNotifBtn();
+      startNotifWatcher();
+    }
   }
 }
 
